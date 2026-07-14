@@ -7,11 +7,47 @@ Enthaelt keine Berechnungs- oder UI-Logik (Separation of Concerns).
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
+from typing import Callable, TypeVar
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+
+T = TypeVar("T")
+
+# Textmarker, an denen ein Yahoo-Finance-Rate-Limit (HTTP 429) erkannt wird.
+_RATE_LIMIT_MARKERS = ("too many requests", "rate limit", "429")
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    return any(marker in str(exc).lower() for marker in _RATE_LIMIT_MARKERS)
+
+
+def _call_with_retry(func: Callable[[], T], retries: int = 2, base_delay: float = 1.5) -> T:
+    """
+    Ruft `func` auf und wiederholt bei einem Yahoo-Finance-Rate-Limit
+    (HTTP 429 "Too Many Requests") automatisch mit kurzer, ansteigender
+    Wartezeit (Exponential Backoff). Andere Fehler (z. B. ungueltiges
+    Ticker-Symbol) werden sofort durchgereicht, ohne zu warten.
+
+    Hintergrund: yfinance nutzt eine inoffizielle, kostenlose Yahoo-Finance-
+    Schnittstelle mit IP-basiertem Rate-Limit. Auf Streamlit Community Cloud
+    teilen sich viele fremde Apps dieselben Server-IPs, daher kann dieses
+    Limit auch ohne nennenswerten eigenen Traffic auftreten.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return func()
+        except Exception as exc:  # yfinance wirft diverse Exception-Typen
+            last_exc = exc
+            if _is_rate_limit_error(exc) and attempt < retries:
+                time.sleep(base_delay * (2**attempt))
+                continue
+            raise
+    raise last_exc  # type: ignore[misc]  # pragma: no cover
 
 # Konfiguration der in der UI wählbaren Zeitraeume.
 # Zwei Modi:
@@ -36,7 +72,7 @@ class DataFetchError(Exception):
     """Wird ausgeloest, wenn fuer ein Ticker-Symbol keine Daten verfuegbar sind."""
 
 
-@st.cache_data(ttl=15 * 60, show_spinner=False)
+@st.cache_data(ttl=30 * 60, show_spinner=False)
 def fetch_price_history(ticker: str, period_label: str) -> pd.DataFrame:
     """
     Laedt historische Tageskurse (OHLC) fuer ein Ticker-Symbol.
@@ -79,13 +115,23 @@ def fetch_price_history(ticker: str, period_label: str) -> pd.DataFrame:
         start_date = end_date - timedelta(days=count)
 
     try:
-        raw = yf.Ticker(ticker).history(
-            start=start_date.strftime("%Y-%m-%d"),
-            end=end_date.strftime("%Y-%m-%d"),
-            interval="1d",
-            auto_adjust=True,
+        raw = _call_with_retry(
+            lambda: yf.Ticker(ticker).history(
+                start=start_date.strftime("%Y-%m-%d"),
+                end=end_date.strftime("%Y-%m-%d"),
+                interval="1d",
+                auto_adjust=True,
+            )
         )
     except Exception as exc:  # yfinance kann diverse Exceptions werfen
+        if _is_rate_limit_error(exc):
+            raise DataFetchError(
+                "Yahoo Finance hat die Anfrage vorübergehend gedrosselt (Rate-Limit "
+                "der kostenlosen, inoffiziellen Schnittstelle). Das betrifft alle "
+                "Nutzer weltweit, die diese Schnittstelle gerade nutzen - nicht nur "
+                "Besucher dieser App. Bitte in ein bis zwei Minuten erneut "
+                "versuchen."
+            ) from exc
         raise DataFetchError(f"Fehler beim Abruf von '{ticker}': {exc}") from exc
 
     if raw is None or raw.empty:
@@ -128,7 +174,7 @@ def fetch_price_history(ticker: str, period_label: str) -> pd.DataFrame:
     return raw
 
 
-@st.cache_data(ttl=15 * 60, show_spinner=False)
+@st.cache_data(ttl=60 * 60, show_spinner=False)
 def fetch_ticker_meta(ticker: str) -> dict[str, str]:
     """
     Ermittelt Firmenname und Original-Handelswaehrung zum Ticker.
@@ -147,17 +193,20 @@ def fetch_ticker_meta(ticker: str) -> dict[str, str]:
     currency = "N/A"
 
     try:
-        yf_ticker = yf.Ticker(ticker)
-        # fast_info ist deutlich schneller/robuster als .info fuer die Waehrung.
-        fast_currency = getattr(yf_ticker, "fast_info", {}).get("currency")
-        if fast_currency:
-            currency = fast_currency
+        def _load() -> tuple[str, str]:
+            yf_ticker = yf.Ticker(ticker)
+            # fast_info ist deutlich schneller/robuster als .info fuer die Waehrung.
+            fast_currency = getattr(yf_ticker, "fast_info", {}).get("currency")
+            info = yf_ticker.info
+            resolved_name = info.get("longName") or info.get("shortName") or ticker
+            resolved_currency = fast_currency or info.get("currency", "N/A")
+            return resolved_name, resolved_currency
 
-        info = yf_ticker.info
-        name = info.get("longName") or info.get("shortName") or ticker
-        if currency == "N/A":
-            currency = info.get("currency", "N/A")
+        name, currency = _call_with_retry(_load)
     except Exception:
+        # Nicht kritisch: Name/Waehrung sind Zusatzinfos - bei Fehlschlag
+        # (auch Rate-Limit) faellt die App auf Ticker-Symbol bzw. "N/A" zurueck,
+        # statt die gesamte Seite abzubrechen.
         pass
 
     return {"name": name, "currency": currency}
