@@ -79,10 +79,35 @@ def fetch_price_history(ticker: str, period_label: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=15 * 60, show_spinner=False)
-def fetch_company_name(ticker: str) -> str:
-    """Bester Versuch, den Firmennamen zum Ticker zu ermitteln (fuer Chart-Titel)."""
+def fetch_ticker_meta(ticker: str) -> dict[str, str]:
+    """
+    Ermittelt Firmenname und Original-Handelswaehrung zum Ticker.
+
+    Wichtig: Es wird bewusst IMMER die Original-Waehrung des Tickers
+    zurueckgegeben (z. B. USD fuer AAPL, EUR fuer SAP.DE) - keine
+    Umrechnung in Euro. Kurse werden in der App stets zusammen mit
+    dieser Waehrung dargestellt.
+
+    Returns
+    -------
+    dict mit den Schluesseln "name" und "currency" (Fallback: "" bzw. "N/A").
+    """
+    ticker = ticker.strip().upper()
+    name = ticker
+    currency = "N/A"
+
     try:
-        info = yf.Ticker(ticker.strip().upper()).info
-        return info.get("longName") or info.get("shortName") or ticker.upper()
+        yf_ticker = yf.Ticker(ticker)
+        # fast_info ist deutlich schneller/robuster als .info fuer die Waehrung.
+        fast_currency = getattr(yf_ticker, "fast_info", {}).get("currency")
+        if fast_currency:
+            currency = fast_currency
+
+        info = yf_ticker.info
+        name = info.get("longName") or info.get("shortName") or ticker
+        if currency == "N/A":
+            currency = info.get("currency", "N/A")
     except Exception:
-        return ticker.upper()
+        pass
+
+    return {"name": name, "currency": currency}

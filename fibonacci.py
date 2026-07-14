@@ -31,12 +31,20 @@ class FibonacciResult:
     def range(self) -> float:
         return self.high - self.low
 
-    def as_dataframe(self) -> pd.DataFrame:
-        """Fuer Tabellendarstellung in der UI."""
+    def as_dataframe(self, currency: str = "") -> pd.DataFrame:
+        """
+        Fuer Tabellendarstellung in der UI.
+
+        Parameters
+        ----------
+        currency: Original-Handelswaehrung des Tickers (z. B. "USD", "EUR").
+            Wird hinter jedem Kurswert ausgegeben.
+        """
+        suffix = f" {currency}" if currency else ""
         df = pd.DataFrame(
             {
                 "Level": [f"{ratio * 100:.1f}%" for ratio in self.levels],
-                "Kurs": list(self.levels.values()),
+                "Kurs": [f"{price:,.2f}{suffix}" for price in self.levels.values()],
             }
         )
         return df
