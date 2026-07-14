@@ -73,7 +73,32 @@ def fetch_price_history(ticker: str, period_label: str) -> pd.DataFrame:
             f"Keine Kursdaten fuer '{ticker}' gefunden. Bitte Ticker-Symbol pruefen."
         )
 
-    raw = raw.dropna(subset=["Open", "High", "Low", "Close"])
+    # Defensive Bereinigung: manche yfinance-Versionen liefern je nach
+    # Aufrufkontext MultiIndex-Spalten (z. B. ("Open", "AAPL")) - flach machen,
+    # falls vorhanden, damit df["Open"] etc. zuverlaessig funktioniert.
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+
+    required_cols = ["Open", "High", "Low", "Close"]
+    raw = raw.dropna(subset=required_cols)
+
+    # Duplikate/unsortierte Zeitstempel koennen bei manchen Tickern auftreten
+    # (z. B. durch nachtraeglich korrigierte Datenpunkte) und sollten vor der
+    # Chart-Erstellung bereinigt werden.
+    raw = raw[~raw.index.duplicated(keep="last")].sort_index()
+
+    # Zeitzonen-Info entfernen: ein tz-aware Index ist fuer die Berechnung
+    # nicht relevant und kann bei der Serialisierung fuer Plotly/Streamlit
+    # in seltenen Faellen zu Problemen fuehren.
+    if raw.index.tz is not None:
+        raw.index = raw.index.tz_localize(None)
+
+    # OHLC-Spalten explizit als natives float64 casten (statt z. B. pandas'
+    # nullable "Float64"-Extension-Dtype), um Kompatibilitaetsprobleme mit
+    # Plotly bei der Trace-Erstellung auszuschliessen.
+    for col in required_cols:
+        raw[col] = raw[col].astype("float64")
+
     raw.index.name = "Date"
     return raw
 

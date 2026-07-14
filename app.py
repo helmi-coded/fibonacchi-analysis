@@ -64,10 +64,8 @@ def render_sidebar() -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Chart-Aufbau
 # ---------------------------------------------------------------------------
-def build_chart(df, fib_result, ticker: str, company_name: str, currency: str) -> go.Figure:
-    fig = go.Figure()
-
-    # Kursverlauf als Candlestick fuer maximale Informationsdichte.
+def _add_candlestick_trace(fig: go.Figure, df, ticker: str, currency: str) -> None:
+    """Fuegt den Kursverlauf als Candlestick hinzu (bevorzugter Chart-Typ)."""
     fig.add_trace(
         go.Candlestick(
             x=df.index,
@@ -89,6 +87,42 @@ def build_chart(df, fib_result, ticker: str, company_name: str, currency: str) -
             ),
         )
     )
+
+
+def _add_line_fallback_trace(fig: go.Figure, df, ticker: str, currency: str) -> None:
+    """
+    Fallback-Chart als einfache Linie (Schlusskurs), falls der Candlestick-Trace
+    in der Zielumgebung aus irgendeinem Grund fehlschlaegt (z. B. abweichende
+    Plotly-/Python-Version auf dem Deployment-Host). Bewusst ohne exotische
+    Properties gehalten, um maximale Kompatibilitaet sicherzustellen.
+    """
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=df["Close"],
+            mode="lines",
+            name=ticker.upper(),
+            line=dict(color="#2c3e50", width=1.6),
+            hovertemplate=f"Datum: %{{x|%d.%m.%y}}<br>Schlusskurs: %{{y:,.2f}} {currency}<extra></extra>",
+        )
+    )
+
+
+def build_chart(df, fib_result, ticker: str, company_name: str, currency: str) -> go.Figure:
+    fig = go.Figure()
+
+    try:
+        _add_candlestick_trace(fig, df, ticker, currency)
+    except Exception:
+        # Robuster Fallback statt Absturz der gesamten App - siehe Docstring
+        # von _add_line_fallback_trace.
+        fig = go.Figure()
+        _add_line_fallback_trace(fig, df, ticker, currency)
+        st.warning(
+            "Der Candlestick-Chart konnte in dieser Umgebung nicht dargestellt "
+            "werden - es wird stattdessen eine Linienansicht des Schlusskurses "
+            "angezeigt."
+        )
 
     # Fibonacci-Level als horizontale Linien ueber den gesamten Chartbereich.
     for ratio in FIBONACCI_RATIOS:
@@ -162,8 +196,16 @@ def main() -> None:
     col4.metric("Spanne", f"{fib_result.range:,.2f} {currency}")
 
     # Chart
-    fig = build_chart(df, fib_result, ticker, company_name, currency)
-    st.plotly_chart(fig, use_container_width=True)
+    try:
+        fig = build_chart(df, fib_result, ticker, company_name, currency)
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as exc:
+        # Zeigt den echten Fehler direkt in der App an (Streamlit Cloud redigiert
+        # sonst die Fehlermeldung in der Standardansicht) - erleichtert die
+        # Diagnose deutlich, ohne dass Log-Zugriff noetig ist.
+        st.error("Der Chart konnte nicht erstellt werden.")
+        with st.expander("Technische Details anzeigen"):
+            st.exception(exc)
 
     # Level-Tabelle
     with st.expander("Fibonacci-Level als Tabelle anzeigen"):

@@ -11,6 +11,7 @@ fibonacci-app/
 ├── data_fetcher.py      # Datenbeschaffung via yfinance (mit Caching)
 ├── fibonacci.py         # Berechnungslogik (Hoch/Tief, Retracement-Level)
 ├── requirements.txt      # Python-Abhängigkeiten
+├── runtime.txt           # pinnt Python 3.11 für Streamlit Cloud (Stabilität)
 ├── .streamlit/config.toml  # Theme-Einstellungen
 └── .gitignore
 ```
