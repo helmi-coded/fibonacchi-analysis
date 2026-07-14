@@ -13,15 +13,22 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-# Zuordnung der in der UI wählbaren Zeitraeume auf Kalendertage.
-# yfinance kennt keinen nativen "200 Tage"-Zeitraum, daher wird
-# grundsaetzlich ueber ein Start-/Enddatum gearbeitet (robuster als
-# die period="..."-Kurzschreibweise von yfinance).
-PERIOD_TO_DAYS: dict[str, int] = {
-    "1 Monat": 30,
-    "200 Tage": 200,
-    "1 Jahr": 365,
-    "5 Jahre": 365 * 5,
+# Konfiguration der in der UI wählbaren Zeitraeume.
+# Zwei Modi:
+#   "calendar" -> Zeitraum = heute minus N Kalendertage (einfache Rueckschau).
+#   "trading"  -> Zeitraum = exakt die letzten N Handelstage (Boersentage).
+#
+# Der "200 Handelstage (GD 200)"-Zeitraum bildet bewusst den klassischen
+# 200-Tage-Durchschnitt (GD 200) nach: Dieser bezieht sich per Definition auf
+# 200 Handelstage, NICHT auf 200 Kalendertage. Bei reiner Kalendertage-Rechnung
+# (heute − 200 Tage) waeren wegen Wochenenden/Feiertagen nur ca. 140-145
+# tatsaechliche Handelstage enthalten - das wuerde Hoch/Tief und damit die
+# Fibonacci-Level verfaelschen.
+PERIOD_CONFIG: dict[str, dict] = {
+    "1 Monat": {"mode": "calendar", "count": 30},
+    "200 Handelstage (GD 200)": {"mode": "trading", "count": 200},
+    "1 Jahr": {"mode": "calendar", "count": 365},
+    "5 Jahre": {"mode": "calendar", "count": 365 * 5},
 }
 
 
@@ -37,11 +44,14 @@ def fetch_price_history(ticker: str, period_label: str) -> pd.DataFrame:
     Parameters
     ----------
     ticker: Ticker-Symbol, z. B. "AAPL", "SAP.DE".
-    period_label: Einer der Schluessel aus PERIOD_TO_DAYS.
+    period_label: Einer der Schluessel aus PERIOD_CONFIG.
 
     Returns
     -------
     DataFrame mit Spalten Open, High, Low, Close, Volume, indiziert nach Datum.
+    Im Modus "trading" enthaelt das Ergebnis maximal genau `count` Zeilen
+    (die letzten N Handelstage); bei sehr jungen Tickern koennen es weniger
+    sein, falls insgesamt weniger Handelstage existieren.
 
     Raises
     ------
@@ -51,12 +61,22 @@ def fetch_price_history(ticker: str, period_label: str) -> pd.DataFrame:
     if not ticker:
         raise DataFetchError("Bitte ein Ticker-Symbol eingeben.")
 
-    days = PERIOD_TO_DAYS.get(period_label)
-    if days is None:
+    config = PERIOD_CONFIG.get(period_label)
+    if config is None:
         raise DataFetchError(f"Unbekannter Zeitraum: {period_label}")
 
+    mode = config["mode"]
+    count = config["count"]
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
+
+    if mode == "trading":
+        # Kalendertage-Puffer fuer die Handelstage-Abfrage: Handelstage machen
+        # nur ca. 5/7 der Kalendertage aus (Faktor 1.6), zzgl. fixem Puffer fuer
+        # Feiertage, damit sicher genuegend Handelstage geladen werden.
+        buffer_days = int(count * 1.6) + 30
+        start_date = end_date - timedelta(days=buffer_days)
+    else:
+        start_date = end_date - timedelta(days=count)
 
     try:
         raw = yf.Ticker(ticker).history(
@@ -98,6 +118,11 @@ def fetch_price_history(ticker: str, period_label: str) -> pd.DataFrame:
     # Plotly bei der Trace-Erstellung auszuschliessen.
     for col in required_cols:
         raw[col] = raw[col].astype("float64")
+
+    if mode == "trading":
+        # Auf exakt die letzten `count` Handelstage zuschneiden (falls durch
+        # den Kalenderpuffer mehr geladen wurden als benoetigt).
+        raw = raw.tail(count)
 
     raw.index.name = "Date"
     return raw

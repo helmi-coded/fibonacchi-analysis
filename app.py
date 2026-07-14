@@ -13,7 +13,7 @@ from __future__ import annotations
 import plotly.graph_objects as go
 import streamlit as st
 
-from data_fetcher import PERIOD_TO_DAYS, DataFetchError, fetch_price_history, fetch_ticker_meta
+from data_fetcher import PERIOD_CONFIG, DataFetchError, fetch_price_history, fetch_ticker_meta
 from fibonacci import FIBONACCI_RATIOS, calculate_fibonacci_levels
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ def render_sidebar() -> tuple[str, str]:
 
     period_label = st.sidebar.selectbox(
         "Zeitraum",
-        options=list(PERIOD_TO_DAYS.keys()),
+        options=list(PERIOD_CONFIG.keys()),
         index=2,  # Standard: "1 Jahr"
     )
 
@@ -183,6 +183,16 @@ def main() -> None:
     company_name = meta["name"]
     currency = meta["currency"]  # Original-Handelswaehrung des Tickers, keine Umrechnung.
 
+    # Hinweis, falls im "Handelstage"-Modus weniger Datenpunkte vorliegen als
+    # angefordert (z. B. bei sehr jungen Boersengaengen).
+    period_config = PERIOD_CONFIG[period_label]
+    if period_config["mode"] == "trading" and len(df) < period_config["count"]:
+        st.info(
+            f"Hinweis: Für {ticker.upper()} liegen nur {len(df)} von "
+            f"{period_config['count']} angeforderten Handelstagen vor "
+            "(vermutlich kürzere Börsenhistorie)."
+        )
+
     # Kennzahlen-Kopfzeile
     col1, col2, col3, col4 = st.columns(4)
     last_close = float(df["Close"].iloc[-1])
@@ -236,18 +246,36 @@ def render_interval_explanation() -> None:
 
     st.markdown(
         """
-**Definition der Zeiträume** (jeweils Kalendertage, nicht Handelstage,
-gerechnet vom heutigen Datum rückwärts):
+**Was bedeuten die Zeiträume überhaupt?**
 
-| Zeitraum | Kalendertage | Zeitfenster |
+Alle vier Zeiträume definieren lediglich das **Rückschau-Fenster**, aus dem
+Hoch und Tief für die Fibonacci-Berechnung ermittelt werden - sie sind reine
+Datenfenster, keine Indikatoren oder gleitenden Durchschnitte, die als Linie
+im Chart erscheinen.
+
+| Zeitraum | Basis | Was genau wird geladen? |
 |---|---|---|
-| 1 Monat | 30 Tage | heute − 30 Tage bis heute |
-| 200 Tage | 200 Tage | heute − 200 Tage bis heute |
-| 1 Jahr | 365 Tage | heute − 365 Tage bis heute |
-| 5 Jahre | 1.825 Tage (365 × 5) | heute − 1.825 Tage bis heute |
+| 1 Monat | Kalendertage | heute − 30 Kalendertage bis heute |
+| 200 Handelstage (GD 200) | Handelstage | die letzten 200 tatsächlichen Börsenhandelstage (Wochenenden/Feiertage ausgeschlossen) |
+| 1 Jahr | Kalendertage | heute − 365 Kalendertage bis heute |
+| 5 Jahre | Kalendertage | heute − 1.825 Kalendertage (365 × 5) bis heute |
 
-Da an Wochenenden und Feiertagen nicht gehandelt wird, enthält der
-Datensatz entsprechend weniger Kursdatenpunkte als Kalendertage.
+**"1 Monat", "1 Jahr" und "5 Jahre" sind Kalendertage-basiert:** Es wird
+einfach ab heute rückwärts gerechnet (heute − N Kalendertage). Der Datensatz
+enthält dabei entsprechend weniger Kursdatenpunkte als Kalendertage, da an
+Wochenenden/Feiertagen nicht gehandelt wird.
+
+**"200 Handelstage (GD 200)" ist bewusst anders gerechnet:** Der Name spielt
+auf den bekannten gleitenden 200-Tage-Durchschnitt (GD 200) an, der in der
+Charttechnik üblicherweise als **Handelstage**-Fenster definiert ist (nicht
+Kalendertage). Diese App berechnet und zeichnet **keinen** gleitenden
+Durchschnitt (keine GD-200-Linie im Chart) - übernommen wird ausschließlich
+die Fenstergröße "200 Handelstage" als Basis für die Hoch/Tief-Ermittlung.
+Technisch wird dazu ein größeres Kalenderfenster geladen (Puffer für
+Wochenenden/Feiertage) und anschließend exakt auf die letzten 200
+tatsächlichen Handelstage zugeschnitten. Bei sehr jungen Börsengängen mit
+weniger als 200 vorhandenen Handelstagen erfolgt oberhalb der Kennzahlen ein
+gesonderter Hinweis.
 
 **Berechnungslogik der Fibonacci-Level** (identisch für jeden Zeitraum,
 nur Hoch/Tief unterscheiden sich):
